@@ -3,6 +3,8 @@ const {Client, LocalAuth} = Whatsapp;
 
 import qrcode from "qrcode-terminal";
 
+import random from "seeded-random"
+
 /*
 import express from "express";
 const app = express();
@@ -18,68 +20,11 @@ import net from "net";
 
 const port = 9000;
 
-const client = new Client({
-	puppeteer: {
-		executablePath: "/usr/bin/chromium"
-		, args: [
-			"--no-sandbox",
-			]
-		, headless: true
-	}
-	, authStrategy: new LocalAuth()
-});
-
-var client_ready = false
-
-client.on("ready", () => {
-	console.log("client ready");
-	client_ready = true;
-});
-
-client.on("qr", qr => {
-	qrcode.generate(qr, {small:true});
-});
-
-client.on("message_create", async (msg) => {
-	let chat = await msg.getChat();
-	if(chat.isGroup){
-		console.log("from group", chat.name);
-		if(msg.fromMe == true)
-			console.log("you:")
-		else
-			console.log(msg._data.notifyName+":");
-	}
-	else{
-		if(msg.fromMe == true)
-			console.log("you to "+chat.name+":");
-		else
-			console.log(chat.name, ":");
-	}
-	
-	console.log(msg.body);
-	
-	if(msg.body == "test"){
-		console.log("-------");
-		console.log(msg);
-		console.log("-------");
-		console.log(chat);
-		console.log("-------");
-	}
-}),
-
-client.initialize();
-
-/*
-app.listen(port, () =>{
-	console.log("server started on port", port);
-});
-
-app.use("/", (req, res) => {
-	//res.sendFile('/index.html', {root: __dirname});
-	console.log("req");
-	res.send("hello");
-});
-*/
+const clients = [];
+var clients_ready = [];
+var clients_created = [];
+var clients_auth = [];
+var clients_passwords = [];
 
 const server = net.createServer((stream) => {
 
@@ -104,13 +49,78 @@ const server = net.createServer((stream) => {
 		
 		var r_json = {};
 		r_json.status = "failed";
-		
-		if(client_ready){
+
+		if(d_json.req == "login"){
+			if(clients[d_json.num] != null){
+				try{
+					clients[d_json.num].logout();
+				}
+				catch (error) {
+					console.log(error);
+				}
+			}
+
+			console.log("new client");
+			clients[d_json.num] = new Client({
+				puppeteer: {
+					executablePath: "/usr/bin/chromium"
+					, args: [
+						"--no-sandbox",
+						]
+					, headless: true
+				}
+				, authStrategy: new LocalAuth({clientId:[d_json.num]})
+			});
+
+			clients_ready[d_json.num] = false;
+			clients_auth[d_json.num] = false;
+			clients_created[d_json.num] = true;
 			
+			clients[d_json.num].on("ready", () => {
+				console.log("client", d_json.num, "ready");
+			});
+
+			clients[d_json.num].on("qr", qr => {
+				console.log("created ", d_json.num);
+				qrcode.generate(qr, {small:true});
+				clients_created[d_json.num] = true;
+				clients_ready[d_json.num] = false;
+				clients_auth[d_json.num] = false;
+			});
+
+
+			clients[d_json.num].on("authenticated", () => {
+				console.log("authenticated ", d_json.num);
+				clients_auth[d_json.num] = true;
+			});
+
+			console.log("init", d_json.num);
+			clients[d_json.num].initialize();
+
+			r_json.status = "success";
+			r_json.pad = "pad";
+		}
+		else if(d_json.req == "code"){
+			if(clients_created[d_json.num] && clients_auth[d_json.num] && !clients_ready[d_json.num]){
+				r_json.password = random.range(Date.now().toString(), 10000000000000000000000000000000, 99999999999999999999999999999999).toString();
+				clients_passwords[d_json.num] = r_json.password;
+				clients_ready[d_json.num] = true;
+
+				r_json.status = "success";
+			}
+			else{
+				r_json.cause = "client " + d_json.num + " not ready";
+				console.log(clients_created[d_json.num], clients_auth[d_json.num], clients_ready[d_json.num]);
+			}
+			r_json.auth = clients_auth[d_json.num].toString();
+			r_json.pad = "pad";
+		}
+		else if(clients_ready[d_json.num] && clients_passwords[d_json.num] == d_json.password){
+		
 			if(d_json.req == "chats"){
 				r_json.req = "chats"
 			
-				let chats = await client.getChats();
+				let chats = await clients[d_json.num].getChats();
 				r_json.chats=[];
 				r_json.ids=[];
 				
@@ -124,7 +134,7 @@ const server = net.createServer((stream) => {
 			}
 			
 			else if(d_json.req == "messages") {
-				let chat = await client.getChatById(d_json.id);
+				let chat = await clients[d_json.num].getChatById(d_json.id);
 
 				let messages = await chat.fetchMessages(25);
 				console.log("messages:",messages.length)
@@ -155,7 +165,7 @@ const server = net.createServer((stream) => {
 							if(i == 0)
 								console.log(messages[i + off]);
 							r_json.names[i] = messages[i + off]._data.notifyName;
-							if(r_json.names[i] == null)
+							if(r_json.names[i] == null || r_json.names[i] == "")
 								r_json.names[i] = messages[i + off].author;
 						}
 					}
@@ -173,20 +183,23 @@ const server = net.createServer((stream) => {
 					if(d_json.replyTo != "" && d_json.replyTo != null)
 						m_options.quotedMessageId = d_json.replyTo
 					
-					let id = await client.sendMessage(d_json.id, d_json.body, m_options);
+					let id = await clients[d_json.num].sendMessage(d_json.id, d_json.body, m_options);
 		
 					r_json.id = id;
 					r_json.status = "success";
 				}
 			}
 
-			console.log(r_json);
-			stream.write(JSON.stringify(r_json)+"\n", "utf8");
 		}
 		else {
-			console.log("client is not ready")
-						stream.write(JSON.stringify({status:"failed", cause: "server not ready"})+"\n", "utf8");
+			console.log("client is not ready");
+			console.log(clients_ready[d_json.num], clients_passwords[d_json.num]);
+			r_json.cause = "client not ready";
+			r_json.exists = (clients[d_json.num] != null && clients[d_json.num] != "");
 		}
+		
+		console.log(r_json);
+		stream.write(JSON.stringify(r_json)+"\n", "utf8");
 	});
 })
 
